@@ -3,6 +3,7 @@ data
 .conda_envs
 cache
 project_3/result/
+project_3/logs/
 
 # Python
 __pycache__/
