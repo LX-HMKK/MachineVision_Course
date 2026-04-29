@@ -1,0 +1,31 @@
+data
+.conda_pkgs
+.conda_envs
+cache
+project_3/result/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+.env
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
