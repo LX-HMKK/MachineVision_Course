@@ -1,0 +1,133 @@
+{
+  "image": "作业2图像.png",
+  "method": "contours_robust_filtered",
+  "filter": {
+    "min_radius": 180,
+    "min_diameter": 370,
+    "effective_min_radius": 185.0,
+    "min_circle_area": 107521.01
+  },
+  "circle_count": 10,
+  "circles": [
+    {
+      "index": 1,
+      "center_px": {
+        "x": 2529,
+        "y": 2597
+      },
+      "radius_px": 2575,
+      "diameter_px": 5150,
+      "circularity": 0.745,
+      "fill_ratio": 0.969,
+      "approximate": true
+    },
+    {
+      "index": 2,
+      "center_px": {
+        "x": 2573,
+        "y": 2594
+      },
+      "radius_px": 2117,
+      "diameter_px": 4234,
+      "circularity": 0.898,
+      "fill_ratio": 0.998,
+      "approximate": false
+    },
+    {
+      "index": 3,
+      "center_px": {
+        "x": 2560,
+        "y": 2586
+      },
+      "radius_px": 1475,
+      "diameter_px": 2950,
+      "circularity": 0.897,
+      "fill_ratio": 0.997,
+      "approximate": false
+    },
+    {
+      "index": 4,
+      "center_px": {
+        "x": 2559,
+        "y": 2585
+      },
+      "radius_px": 1141,
+      "diameter_px": 2282,
+      "circularity": 0.504,
+      "fill_ratio": 0.988,
+      "approximate": false
+    },
+    {
+      "index": 5,
+      "center_px": {
+        "x": 2567,
+        "y": 2591
+      },
+      "radius_px": 956,
+      "diameter_px": 1912,
+      "circularity": 0.87,
+      "fill_ratio": 0.987,
+      "approximate": false
+    },
+    {
+      "index": 6,
+      "center_px": {
+        "x": 2564,
+        "y": 2588
+      },
+      "radius_px": 807,
+      "diameter_px": 1614,
+      "circularity": 0.897,
+      "fill_ratio": 0.997,
+      "approximate": false
+    },
+    {
+      "index": 7,
+      "center_px": {
+        "x": 2905,
+        "y": 2765
+      },
+      "radius_px": 189,
+      "diameter_px": 378,
+      "circularity": 0.892,
+      "fill_ratio": 0.988,
+      "approximate": false
+    },
+    {
+      "index": 8,
+      "center_px": {
+        "x": 2225,
+        "y": 2411
+      },
+      "radius_px": 189,
+      "diameter_px": 378,
+      "circularity": 0.896,
+      "fill_ratio": 0.985,
+      "approximate": false
+    },
+    {
+      "index": 9,
+      "center_px": {
+        "x": 2743,
+        "y": 2248
+      },
+      "radius_px": 189,
+      "diameter_px": 378,
+      "circularity": 0.893,
+      "fill_ratio": 0.987,
+      "approximate": false
+    },
+    {
+      "index": 10,
+      "center_px": {
+        "x": 2387,
+        "y": 2929
+      },
+      "radius_px": 188,
+      "diameter_px": 376,
+      "circularity": 0.887,
+      "fill_ratio": 0.989,
+      "approximate": false
+    }
+  ]
+}
