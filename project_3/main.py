@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from sklearn.svm import LinearSVC
+from sklearn.svm import LinearSVC, SVC
 from tqdm import tqdm
 
 
@@ -82,14 +82,39 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--power-normalize",
-        action="store_true",
-        help="对最终 SPM 直方图做平方根压缩；可削弱高频视觉词支配，常与 rootsift 一起提升精度。",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="对最终 SPM 直方图做平方根压缩；默认开启，可削弱高频视觉词支配，常与 rootsift 一起提升精度。",
+    )
+    parser.add_argument(
+        "--sift-sampling",
+        choices=["keypoint", "dense", "hybrid"],
+        default="hybrid",
+        help="SIFT 采样方式；keypoint 保持原检测器，dense 使用规则网格，hybrid 合并二者以增强场景纹理覆盖。",
+    )
+    parser.add_argument(
+        "--dense-step",
+        type=int,
+        default=4,
+        help="dense/hybrid 模式下网格关键点间隔；数值越小覆盖越密、计算越慢。",
+    )
+    parser.add_argument(
+        "--dense-size",
+        type=int,
+        default=16,
+        help="dense/hybrid 模式下每个规则关键点的 SIFT 尺度大小。",
     )
     parser.add_argument(
         "--svm-c",
         type=float,
-        default=5.0,
-        help="LinearSVC 正则强度；增大 C 会更贴合训练集，可能提升精度，也可能过拟合。",
+        default=1.0,
+        help="SVM 正则强度；增大 C 会更贴合训练集，可能提升精度，也可能过拟合。",
+    )
+    parser.add_argument(
+        "--svm-kernel",
+        choices=["linear", "rbf"],
+        default="rbf",
+        help="SVM 核函数；linear 保持原默认 LinearSVC，rbf 使用非线性 SVC，可能更适合直方图特征但会更慢。",
     )
     parser.add_argument(
         "--random-state",
@@ -169,15 +194,54 @@ def read_gray(path: Path) -> np.ndarray:
     return img
 
 
+def make_dense_keypoints(img_shape: Tuple[int, int], step: int, size: int) -> List[cv2.KeyPoint]:
+    if step <= 0:
+        raise ValueError("--dense-step must be positive")
+    if size <= 0:
+        raise ValueError("--dense-size must be positive")
+
+    h, w = img_shape
+    offset = step / 2.0
+    xs = np.arange(offset, w, step, dtype=np.float32)
+    ys = np.arange(offset, h, step, dtype=np.float32)
+    return [cv2.KeyPoint(float(x), float(y), float(size)) for y in ys for x in xs]
+
+
 def extract_sift_descriptors(
     img: np.ndarray,
     sift,
     max_descriptors: int,
     sift_normalization: str,
     descriptor_selection: str,
+    sift_sampling: str = "keypoint",
+    dense_step: int = 12,
+    dense_size: int = 16,
 ) -> Tuple[np.ndarray, np.ndarray]:
     # 提取 SIFT 后做归一化；RootSIFT 往往更适合 BoVW，但会改变实验结果。
-    keypoints, descriptors = sift.detectAndCompute(img, None)
+    keypoints = []
+    descriptors_list = []
+
+    if sift_sampling in ("keypoint", "hybrid"):
+        detected_keypoints, detected_descriptors = sift.detectAndCompute(img, None)
+        if detected_descriptors is not None and len(detected_keypoints) > 0:
+            keypoints.extend(detected_keypoints)
+            descriptors_list.append(detected_descriptors)
+
+    if sift_sampling in ("dense", "hybrid"):
+        dense_keypoints = make_dense_keypoints(img.shape, dense_step, dense_size)
+        dense_keypoints, dense_descriptors = sift.compute(img, dense_keypoints)
+        if dense_descriptors is not None and len(dense_keypoints) > 0:
+            keypoints.extend(dense_keypoints)
+            descriptors_list.append(dense_descriptors)
+
+    if sift_sampling not in ("keypoint", "dense", "hybrid"):
+        raise ValueError(f"Unsupported SIFT sampling mode: {sift_sampling}")
+
+    if descriptors_list:
+        descriptors = np.vstack(descriptors_list)
+    else:
+        descriptors = None
+
     if descriptors is None or len(keypoints) == 0:
         return np.empty((0, 2), dtype=np.float32), np.empty((0, 128), dtype=np.float32)
 
@@ -251,6 +315,9 @@ def build_dictionary(
     max_descriptors_per_image: int,
     sift_normalization: str,
     descriptor_selection: str,
+    sift_sampling: str,
+    dense_step: int,
+    dense_size: int,
     n_clusters: int,
     random_state: int,
 ):
@@ -259,7 +326,14 @@ def build_dictionary(
     for path in tqdm(train_paths, desc="Extracting SIFT for dictionary"):
         img = read_gray(path)
         _, desc = extract_sift_descriptors(
-            img, sift, max_descriptors_per_image, sift_normalization, descriptor_selection
+            img,
+            sift,
+            max_descriptors_per_image,
+            sift_normalization,
+            descriptor_selection,
+            sift_sampling,
+            dense_step,
+            dense_size,
         )
         if len(desc) > 0:
             all_desc.append(desc)
@@ -286,6 +360,9 @@ def build_features(
     max_descriptors_per_image: int,
     sift_normalization: str,
     descriptor_selection: str,
+    sift_sampling: str,
+    dense_step: int,
+    dense_size: int,
     power_normalize: bool,
 ) -> np.ndarray:
     # 对训练集和测试集使用同一个视觉词典，生成一致维度的 SPM 特征。
@@ -293,7 +370,14 @@ def build_features(
     for path in tqdm(paths, desc="Building SPM features"):
         img = read_gray(path)
         pts, desc = extract_sift_descriptors(
-            img, sift, max_descriptors_per_image, sift_normalization, descriptor_selection
+            img,
+            sift,
+            max_descriptors_per_image,
+            sift_normalization,
+            descriptor_selection,
+            sift_sampling,
+            dense_step,
+            dense_size,
         )
         feat = spm_histogram(pts, desc, img.shape, kmeans, power_normalize)
         features.append(feat)
@@ -342,7 +426,11 @@ def save_training_log(
             "sift_normalization": args.sift_normalization,
             "descriptor_selection": args.descriptor_selection,
             "power_normalize": args.power_normalize,
+            "sift_sampling": args.sift_sampling,
+            "dense_step": args.dense_step,
+            "dense_size": args.dense_size,
             "svm_c": args.svm_c,
+            "svm_kernel": args.svm_kernel,
             "random_state": args.random_state,
         },
         "dataset": {
@@ -374,7 +462,11 @@ def save_training_log(
         "sift_normalization",
         "descriptor_selection",
         "power_normalize",
+        "sift_sampling",
+        "dense_step",
+        "dense_size",
         "svm_c",
+        "svm_kernel",
         "accuracy",
         "macro_f1",
         "weighted_f1",
@@ -388,12 +480,30 @@ def save_training_log(
         "sift_normalization": args.sift_normalization,
         "descriptor_selection": args.descriptor_selection,
         "power_normalize": args.power_normalize,
+        "sift_sampling": args.sift_sampling,
+        "dense_step": args.dense_step,
+        "dense_size": args.dense_size,
         "svm_c": args.svm_c,
+        "svm_kernel": args.svm_kernel,
         "accuracy": meta["accuracy"],
         "macro_f1": report_dict["macro avg"]["f1-score"],
         "weighted_f1": report_dict["weighted avg"]["f1-score"],
         "feature_dim": meta["feature_dim"],
     }
+    if csv_path.exists():
+        with csv_path.open("r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            existing_rows = [
+                {field: old_row.get(field, "") for field in csv_fields}
+                for old_row in reader
+            ]
+            existing_fields = reader.fieldnames or []
+        if existing_fields != csv_fields:
+            with csv_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=csv_fields)
+                writer.writeheader()
+                writer.writerows(existing_rows)
+
     write_header = not csv_path.exists()
     with csv_path.open("a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields)
@@ -431,6 +541,9 @@ def main():
         args.max_descriptors_per_image,
         args.sift_normalization,
         args.descriptor_selection,
+        args.sift_sampling,
+        args.dense_step,
+        args.dense_size,
         args.num_clusters,
         args.random_state,
     )
@@ -443,6 +556,9 @@ def main():
         args.max_descriptors_per_image,
         args.sift_normalization,
         args.descriptor_selection,
+        args.sift_sampling,
+        args.dense_step,
+        args.dense_size,
         args.power_normalize,
     )
     x_test = build_features(
@@ -452,11 +568,17 @@ def main():
         args.max_descriptors_per_image,
         args.sift_normalization,
         args.descriptor_selection,
+        args.sift_sampling,
+        args.dense_step,
+        args.dense_size,
         args.power_normalize,
     )
 
     # 4. 执行分类：用 SVM 学习训练集特征，并预测测试集类别。
-    clf = LinearSVC(C=args.svm_c, random_state=args.random_state)
+    if args.svm_kernel == "linear":
+        clf = LinearSVC(C=args.svm_c, random_state=args.random_state)
+    else:
+        clf = SVC(C=args.svm_c, kernel=args.svm_kernel, gamma="scale")
     clf.fit(x_train, np.array(train_labels))
     y_pred = clf.predict(x_test)
 
@@ -494,7 +616,11 @@ def main():
         "sift_normalization": args.sift_normalization,
         "descriptor_selection": args.descriptor_selection,
         "power_normalize": args.power_normalize,
+        "sift_sampling": args.sift_sampling,
+        "dense_step": args.dense_step,
+        "dense_size": args.dense_size,
         "svm_c": args.svm_c,
+        "svm_kernel": args.svm_kernel,
         "requested_device": args.device,
         "actual_device": actual_device,
         "device_note": device_note,
