@@ -3,6 +3,7 @@ data
 .conda_envs
 cache
 *.pdf
+project_2/output_*.png
 project_3/result/
 project_3/logs/
 project_3/tmp*/
