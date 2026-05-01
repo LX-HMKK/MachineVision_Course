@@ -533,6 +533,8 @@ def save_training_log(
     csv_path = log_dir / "runs.csv"
     csv_fields = [
         "run_id",
+        "train_per_class",
+        "random_state",
         "num_clusters",
         "max_descriptors_per_image",
         "sift_normalization",
@@ -554,6 +556,8 @@ def save_training_log(
     ]
     row = {
         "run_id": run_id,
+        "train_per_class": args.train_per_class,
+        "random_state": args.random_state,
         "num_clusters": args.num_clusters,
         "max_descriptors_per_image": args.max_descriptors_per_image,
         "sift_normalization": args.sift_normalization,

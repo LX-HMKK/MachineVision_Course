@@ -140,6 +140,8 @@ class MainFeatureTests(unittest.TestCase):
         self.assertIn("created_at", log_data)
         self.assertNotIn("created_at", rows[0])
         self.assertIn("run_id", rows[0])
+        self.assertEqual(rows[0]["train_per_class"], "150")
+        self.assertEqual(rows[0]["random_state"], "42")
         self.assertEqual(rows[0]["macro_recall"], "0.3")
         self.assertEqual(rows[0]["most_predicted_class"], "02")
         self.assertEqual(rows[0]["most_predicted_ratio"], "0.75")
@@ -207,6 +209,8 @@ class MainFeatureTests(unittest.TestCase):
         self.assertGreaterEqual(float(rows[0]["accuracy"]), float(rows[1]["accuracy"]))
         self.assertEqual(rows[0]["accuracy"], "0.9")
         self.assertEqual(rows[1]["accuracy"], "0.6")
+        self.assertEqual(rows[0]["train_per_class"], "150")
+        self.assertEqual(rows[0]["random_state"], "42")
 
 
 if __name__ == "__main__":
