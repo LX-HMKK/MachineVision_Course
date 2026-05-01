@@ -2,13 +2,13 @@ data
 .conda_pkgs
 .conda_envs
 cache
+*.pdf
 project_3/result/
 project_3/logs/
 project_3/tmp*/
 project_3/tmp_param_sweep_*/
 project_3/tmp_param_sweep_cli_*/
 poject_1/HW1_王少卿_2300090326_无监督学习.md
-poject_1/HW1_王少卿_2300090326_无监督学习.pdf
 
 # Python
 __pycache__/
