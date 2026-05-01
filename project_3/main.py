@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics.pairwise import chi2_kernel
 from sklearn.svm import LinearSVC, SVC
 from tqdm import tqdm
 
@@ -59,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-clusters",
         type=int,
-        default=1000,
+        default=5000,
         help="视觉词典大小，即 KMeans 聚类中心数；适当增大可提升表达能力，但会变慢并可能过拟合。",
     )
     parser.add_argument(
@@ -95,26 +96,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dense-step",
         type=int,
-        default=4,
+        default=6,
         help="dense/hybrid 模式下网格关键点间隔；数值越小覆盖越密、计算越慢。",
     )
     parser.add_argument(
-        "--dense-size",
-        type=int,
-        default=16,
-        help="dense/hybrid 模式下每个规则关键点的 SIFT 尺度大小。",
+        "--dense-sizes",
+        default="16",
+        help="dense/hybrid 模式下的 SIFT 尺度列表；单尺度写 16，多尺度写 12,16,24,32。",
     )
     parser.add_argument(
         "--svm-c",
         type=float,
-        default=1.0,
+        default=1.6,
         help="SVM 正则强度；增大 C 会更贴合训练集，可能提升精度，也可能过拟合。",
     )
     parser.add_argument(
         "--svm-kernel",
-        choices=["linear", "rbf"],
-        default="rbf",
-        help="SVM 核函数；linear 保持原默认 LinearSVC，rbf 使用非线性 SVC，可能更适合直方图特征但会更慢。",
+        choices=["linear", "rbf", "chi2"],
+        default="linear",
+        help="SVM 核函数；chi2 使用预计算卡方核，更适合 SPM 直方图但会更慢。",
+    )
+    parser.add_argument(
+        "--chi2-gamma",
+        type=float,
+        default=1.0,
+        help="chi2 核函数的 gamma 参数；仅在 --svm-kernel chi2 时使用。",
     )
     parser.add_argument(
         "--random-state",
@@ -194,17 +200,43 @@ def read_gray(path: Path) -> np.ndarray:
     return img
 
 
-def make_dense_keypoints(img_shape: Tuple[int, int], step: int, size: int) -> List[cv2.KeyPoint]:
+def parse_dense_sizes(value: str | int) -> List[int]:
+    value = str(value) if value is not None else None
+    if value is None or value.strip() == "":
+        raise ValueError("--dense-sizes must contain at least one positive integer")
+    sizes = []
+    for raw_part in value.split(","):
+        part = raw_part.strip()
+        if not part:
+            raise ValueError("--dense-sizes must contain comma-separated positive integers")
+        try:
+            size = int(part)
+        except ValueError as exc:
+            raise ValueError("--dense-sizes must contain comma-separated positive integers") from exc
+        if size <= 0:
+            raise ValueError("--dense-sizes values must be positive")
+        sizes.append(size)
+    return sizes
+
+
+def make_dense_keypoints(img_shape: Tuple[int, int], step: int, sizes: List[int]) -> List[cv2.KeyPoint]:
     if step <= 0:
         raise ValueError("--dense-step must be positive")
-    if size <= 0:
-        raise ValueError("--dense-size must be positive")
+    if not sizes:
+        raise ValueError("--dense-sizes must not be empty")
+    if any(size <= 0 for size in sizes):
+        raise ValueError("--dense-sizes values must be positive")
 
     h, w = img_shape
     offset = step / 2.0
     xs = np.arange(offset, w, step, dtype=np.float32)
     ys = np.arange(offset, h, step, dtype=np.float32)
-    return [cv2.KeyPoint(float(x), float(y), float(size)) for y in ys for x in xs]
+    return [
+        cv2.KeyPoint(float(x), float(y), float(size))
+        for size in sizes
+        for y in ys
+        for x in xs
+    ]
 
 
 def extract_sift_descriptors(
@@ -215,7 +247,7 @@ def extract_sift_descriptors(
     descriptor_selection: str,
     sift_sampling: str = "keypoint",
     dense_step: int = 12,
-    dense_size: int = 16,
+    dense_sizes: List[int] | None = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     # 提取 SIFT 后做归一化；RootSIFT 往往更适合 BoVW，但会改变实验结果。
     keypoints = []
@@ -228,7 +260,9 @@ def extract_sift_descriptors(
             descriptors_list.append(detected_descriptors)
 
     if sift_sampling in ("dense", "hybrid"):
-        dense_keypoints = make_dense_keypoints(img.shape, dense_step, dense_size)
+        if dense_sizes is None:
+            dense_sizes = [16]
+        dense_keypoints = make_dense_keypoints(img.shape, dense_step, dense_sizes)
         dense_keypoints, dense_descriptors = sift.compute(img, dense_keypoints)
         if dense_descriptors is not None and len(dense_keypoints) > 0:
             keypoints.extend(dense_keypoints)
@@ -317,7 +351,7 @@ def build_dictionary(
     descriptor_selection: str,
     sift_sampling: str,
     dense_step: int,
-    dense_size: int,
+    dense_sizes: List[int],
     n_clusters: int,
     random_state: int,
 ):
@@ -333,7 +367,7 @@ def build_dictionary(
             descriptor_selection,
             sift_sampling,
             dense_step,
-            dense_size,
+            dense_sizes,
         )
         if len(desc) > 0:
             all_desc.append(desc)
@@ -362,7 +396,7 @@ def build_features(
     descriptor_selection: str,
     sift_sampling: str,
     dense_step: int,
-    dense_size: int,
+    dense_sizes: List[int],
     power_normalize: bool,
 ) -> np.ndarray:
     # 对训练集和测试集使用同一个视觉词典，生成一致维度的 SPM 特征。
@@ -377,11 +411,53 @@ def build_features(
             descriptor_selection,
             sift_sampling,
             dense_step,
-            dense_size,
+            dense_sizes,
         )
         feat = spm_histogram(pts, desc, img.shape, kmeans, power_normalize)
         features.append(feat)
     return np.vstack(features).astype(np.float32)
+
+
+def fit_predict_svm(
+    x_train: np.ndarray,
+    train_labels: List[int],
+    x_test: np.ndarray,
+    svm_kernel: str,
+    svm_c: float,
+    chi2_gamma: float,
+    random_state: int,
+) -> np.ndarray:
+    labels = np.array(train_labels)
+    if svm_kernel == "linear":
+        clf = LinearSVC(C=svm_c, random_state=random_state)
+        clf.fit(x_train, labels)
+        return clf.predict(x_test)
+
+    if svm_kernel == "chi2":
+        train_kernel = chi2_kernel(x_train, gamma=chi2_gamma)
+        test_kernel = chi2_kernel(x_test, x_train, gamma=chi2_gamma)
+        clf = SVC(C=svm_c, kernel="precomputed")
+        clf.fit(train_kernel, labels)
+        return clf.predict(test_kernel)
+
+    clf = SVC(C=svm_c, kernel=svm_kernel, gamma="scale")
+    clf.fit(x_train, labels)
+    return clf.predict(x_test)
+
+
+def prediction_distribution_summary(y_pred: np.ndarray, label_names: List[str]) -> dict:
+    if len(y_pred) == 0:
+        return {
+            "most_predicted_class": "",
+            "most_predicted_ratio": 0.0,
+        }
+
+    counts = np.bincount(y_pred, minlength=len(label_names))
+    most_idx = int(np.argmax(counts))
+    return {
+        "most_predicted_class": label_names[most_idx],
+        "most_predicted_ratio": float(counts[most_idx] / len(y_pred)),
+    }
 
 
 def save_confusion_matrix(cm: np.ndarray, labels: List[str], output_png: Path) -> None:
@@ -428,9 +504,10 @@ def save_training_log(
             "power_normalize": args.power_normalize,
             "sift_sampling": args.sift_sampling,
             "dense_step": args.dense_step,
-            "dense_size": args.dense_size,
+            "dense_sizes": meta["dense_sizes"],
             "svm_c": args.svm_c,
             "svm_kernel": args.svm_kernel,
+            "chi2_gamma": args.chi2_gamma,
             "random_state": args.random_state,
         },
         "dataset": {
@@ -456,7 +533,6 @@ def save_training_log(
     csv_path = log_dir / "runs.csv"
     csv_fields = [
         "run_id",
-        "created_at",
         "num_clusters",
         "max_descriptors_per_image",
         "sift_normalization",
@@ -464,17 +540,20 @@ def save_training_log(
         "power_normalize",
         "sift_sampling",
         "dense_step",
-        "dense_size",
+        "dense_sizes",
         "svm_c",
         "svm_kernel",
+        "chi2_gamma",
         "accuracy",
+        "macro_recall",
         "macro_f1",
         "weighted_f1",
+        "most_predicted_class",
+        "most_predicted_ratio",
         "feature_dim",
     ]
     row = {
         "run_id": run_id,
-        "created_at": log_data["created_at"],
         "num_clusters": args.num_clusters,
         "max_descriptors_per_image": args.max_descriptors_per_image,
         "sift_normalization": args.sift_normalization,
@@ -482,18 +561,30 @@ def save_training_log(
         "power_normalize": args.power_normalize,
         "sift_sampling": args.sift_sampling,
         "dense_step": args.dense_step,
-        "dense_size": args.dense_size,
+        "dense_sizes": ",".join(str(size) for size in meta["dense_sizes"]),
         "svm_c": args.svm_c,
         "svm_kernel": args.svm_kernel,
+        "chi2_gamma": args.chi2_gamma,
         "accuracy": meta["accuracy"],
+        "macro_recall": report_dict["macro avg"]["recall"],
         "macro_f1": report_dict["macro avg"]["f1-score"],
         "weighted_f1": report_dict["weighted avg"]["f1-score"],
+        "most_predicted_class": meta["most_predicted_class"],
+        "most_predicted_ratio": meta["most_predicted_ratio"],
         "feature_dim": meta["feature_dim"],
     }
+
+    def sort_key(item: dict) -> float:
+        try:
+            return float(item.get("accuracy", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    rows_to_write = []
     if csv_path.exists():
         with csv_path.open("r", newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
-            existing_rows = [
+            rows_to_write = [
                 {field: old_row.get(field, "") for field in csv_fields}
                 for old_row in reader
             ]
@@ -502,14 +593,15 @@ def save_training_log(
             with csv_path.open("w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=csv_fields)
                 writer.writeheader()
-                writer.writerows(existing_rows)
+                writer.writerows(rows_to_write)
 
-    write_header = not csv_path.exists()
-    with csv_path.open("a", newline="", encoding="utf-8") as f:
+    rows_to_write.append(row)
+    rows_to_write.sort(key=sort_key, reverse=True)
+
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields)
-        if write_header:
-            writer.writeheader()
-        writer.writerow(row)
+        writer.writeheader()
+        writer.writerows(rows_to_write)
 
     return log_path
 
@@ -517,6 +609,7 @@ def save_training_log(
 def main():
     args = parse_args()
     actual_device, device_note = resolve_device(args.device)
+    dense_sizes = parse_dense_sizes(args.dense_sizes)
     np.random.seed(args.random_state)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -543,7 +636,7 @@ def main():
         args.descriptor_selection,
         args.sift_sampling,
         args.dense_step,
-        args.dense_size,
+        dense_sizes,
         args.num_clusters,
         args.random_state,
     )
@@ -558,7 +651,7 @@ def main():
         args.descriptor_selection,
         args.sift_sampling,
         args.dense_step,
-        args.dense_size,
+        dense_sizes,
         args.power_normalize,
     )
     x_test = build_features(
@@ -570,17 +663,20 @@ def main():
         args.descriptor_selection,
         args.sift_sampling,
         args.dense_step,
-        args.dense_size,
+        dense_sizes,
         args.power_normalize,
     )
 
     # 4. 执行分类：用 SVM 学习训练集特征，并预测测试集类别。
-    if args.svm_kernel == "linear":
-        clf = LinearSVC(C=args.svm_c, random_state=args.random_state)
-    else:
-        clf = SVC(C=args.svm_c, kernel=args.svm_kernel, gamma="scale")
-    clf.fit(x_train, np.array(train_labels))
-    y_pred = clf.predict(x_test)
+    y_pred = fit_predict_svm(
+        x_train,
+        train_labels,
+        x_test,
+        args.svm_kernel,
+        args.svm_c,
+        args.chi2_gamma,
+        args.random_state,
+    )
 
     acc = accuracy_score(test_labels, y_pred)
     report_txt = classification_report(
@@ -590,6 +686,7 @@ def main():
         test_labels, y_pred, target_names=label_names, digits=4, zero_division=0, output_dict=True
     )
     cm = confusion_matrix(test_labels, y_pred, labels=list(range(len(label_names))))
+    pred_summary = prediction_distribution_summary(y_pred, label_names)
 
     print(f"Accuracy: {acc:.4f}")
     print(report_txt)
@@ -618,14 +715,17 @@ def main():
         "power_normalize": args.power_normalize,
         "sift_sampling": args.sift_sampling,
         "dense_step": args.dense_step,
-        "dense_size": args.dense_size,
+        "dense_sizes": dense_sizes,
         "svm_c": args.svm_c,
         "svm_kernel": args.svm_kernel,
+        "chi2_gamma": args.chi2_gamma,
         "requested_device": args.device,
         "actual_device": actual_device,
         "device_note": device_note,
         "feature_dim": int(x_train.shape[1]),
         "accuracy": float(acc),
+        "most_predicted_class": pred_summary["most_predicted_class"],
+        "most_predicted_ratio": pred_summary["most_predicted_ratio"],
     }
     (args.output_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     log_path = save_training_log(args.log_dir, args, meta, report_dict, label_names)

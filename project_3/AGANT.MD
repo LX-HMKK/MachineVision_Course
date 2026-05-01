@@ -30,11 +30,16 @@
   - `--device cuda`
   - `--train-per-class 150`
   - `--num-clusters 1000`
-  - `--max-descriptors-per-image 200`
-  - `--sift-normalization l2`
+  - `--max-descriptors-per-image 800`
+  - `--sift-normalization rootsift`
   - `--descriptor-selection random`
-  - `--power-normalize` 默认关闭
-  - `--svm-c 1.0`
+  - `--power-normalize` 默认开启
+  - `--sift-sampling hybrid`
+  - `--dense-step 6`
+  - `--dense-sizes 16`
+  - `--svm-c 5.0`
+  - `--svm-kernel rbf`
+  - `--chi2-gamma 1.0`
   - `--random-state 42`
 
 ## 可调参数说明
@@ -44,7 +49,12 @@
 - `--sift-normalization`：SIFT 描述子归一化方式。`l2` 保持原始实现，`rootsift` 通常更适合 BoVW 场景分类实验。
 - `--descriptor-selection`：描述子截断策略。`random` 保持当前默认流程，`response` 按关键点响应强度选择。
 - `--power-normalize`：对最终 SPM 直方图做平方根压缩，可能降低高频视觉词对分类器的支配。
-- `--svm-c`：LinearSVC 正则强度。可尝试 `0.1`、`1`、`5`、`10` 做小规模网格实验。
+- `--sift-sampling`：SIFT 采样方式。`hybrid` 同时保留检测关键点和 dense 网格关键点。
+- `--dense-step`：dense/hybrid 模式下网格关键点间隔。当前日志里最好的一组是 `6`。
+- `--dense-sizes`：dense SIFT 的尺度列表。单尺度写 `16`，多尺度写 `12,16,24,32`。
+- `--svm-c`：SVM 正则强度。当前日志里最好的一组是 `5.0`。
+- `--svm-kernel`：SVM 核函数。`linear`、`rbf`、`chi2` 都保留在 SVM 分类框架内；`chi2` 会使用预计算卡方核，更适合 SPM 直方图。
+- `--chi2-gamma`：卡方核的 gamma 参数，仅在 `--svm-kernel chi2` 时生效。
 - `--random-state`：控制随机采样和聚类初始化，保证结果可复现。
 - `--device`：设备选择参数。当前代码会检测 CUDA，但主流程仍主要依赖 OpenCV SIFT 和 scikit-learn，实际 GPU 加速能力取决于环境中的 GPU 版本 OpenCV 或 cuML 等额外库。
 
@@ -63,8 +73,10 @@
 - 提升当前方案精度的优先方向：
   1. 增大 `--num-clusters`。
   2. 增大 `--max-descriptors-per-image`。
-  3. 调整 `--svm-c`。
-  4. 比较 `random` 与 `response` 两种描述子选择策略。
+  3. 保持当前最优默认配置：`--dense-step 6`、`--svm-c 5.0`、`--svm-kernel rbf`
+  4. 如需实验，再试 `--dense-sizes 12,16,24,32`
+  5. 如需实验，再试 `--svm-kernel chi2` 和 `--chi2-gamma`
+  6. 比较 `random` 与 `response` 两种描述子选择策略。
 - 不建议为了精度直接把主流程替换成 CNN，因为这会偏离 PDF 的算法要求。
 
 ## 环境说明

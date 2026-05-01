@@ -58,8 +58,8 @@ python main.py \
   --descriptor-selection random \
   --power-normalize \
   --sift-sampling hybrid \
-  --dense-step 12 \
-  --dense-size 16 \
+  --dense-step 6 \
+  --dense-sizes 16 \
   --svm-c 5.0 \
   --svm-kernel rbf
 ```
@@ -71,8 +71,43 @@ python main.py \
 - `800` 个描述子上限避免每张图太稀或太慢
 - `RootSIFT + power normalize` 稳定直方图分布
 - `RBF SVM` 提升非线性判别能力
+- `dense-step 6` 和 `svm-c 5.0` 是当前日志里的最好组合
 
-在我这边的探测运行里，这组配置已经能稳定超过 `0.7`，最高到过 `0.7374` 左右。
+在我这边的探测运行里，这组配置已经能稳定超过 `0.7`，最高到过 `0.7356` 左右。
+
+## 新增的课程框架内优化
+
+当前版本继续保持 `SIFT + KMeans + BoVW/SPM + SVM` 主流程，没有引入深度学习，也没有用颜色直方图替代 SPM 特征。新增的两个优化都属于原流程内部增强。
+
+### 1. Chi-Square Kernel SVM
+
+SPM 输出的是非负直方图特征。普通 `linear` 或 `rbf` SVM 可以工作，但直方图之间的差异常用卡方距离衡量。
+
+因此代码新增：
+
+```bash
+--svm-kernel chi2
+--chi2-gamma 1.0
+```
+
+启用后，程序会先计算训练集和测试集的卡方核矩阵，再使用 `SVC(kernel="precomputed")` 完成分类。它仍然是 SVM 分类器，只是把核函数换成更适合直方图的度量方式。
+
+### 2. Multi-scale Dense SIFT
+
+单尺度 dense/hybrid 采样可以写成：
+
+```bash
+--dense-sizes 16
+```
+
+多尺度 dense/hybrid 采样可以写成：
+
+```bash
+--dense-sizes 12,16,24,32
+```
+
+`--dense-sizes` 是唯一的 dense 尺度参数。默认值是 `16`；设置为多个数字后，dense/hybrid 分支会在相同网格位置上生成多个尺度的 SIFT 关键点，从而覆盖不同大小的局部结构。
+它是实验项，不是当前默认最优配置的一部分。
 
 ## 进一步优化的可调项
 
@@ -86,18 +121,22 @@ python main.py \
   - 如果运行时间过长，可以退回 `keypoint`
 
 - `--svm-kernel`
-  - `linear` 和 `rbf`
-  - `rbf` 通常更容易涨分，但训练更慢
+  - `linear`、`rbf` 和 `chi2`
+  - `chi2` 更贴合 SPM 直方图，但会额外计算预核矩阵
   - 如果算力紧张，`linear` 适合做快速对照
+
+- `--chi2-gamma`
+  - 只在 `--svm-kernel chi2` 时生效
+  - 可以围绕 `0.1 / 0.5 / 1.0 / 2.0` 试
 
 - `--num-clusters`
   - 词典大小，决定视觉词的表达能力
-  - 一般可以围绕 `800 / 1000 / 1200` 试
+  - 当前日志里 `1000` 的表现最好
   - 太小会欠表达，太大容易变慢，收益也会递减
 
 - `--svm-c`
   - 控制分类器对训练集的贴合程度
-  - 可以围绕 `1 / 5 / 10` 试
+  - 当前日志里 `5.0` 的表现最好
   - `C` 太小容易欠拟合，太大可能把噪声也学进去
 
 ### 第二层：在第一层稳定后再试
@@ -109,13 +148,13 @@ python main.py \
 
 - `--dense-step`
   - 规则采样网格的间隔
-  - 可以试 `8 / 12 / 16`
+  - 当前日志里 `6` 的表现最好
   - 步长越小，覆盖越密，但计算量更大
 
-- `--dense-size`
-  - dense 关键点的尺度大小
-  - 可以和 `dense-step` 联动调
-  - 一般先保持 `16`，只有在密集采样过度或过稀时再改
+- `--dense-sizes`
+  - dense 关键点大小列表，例如 `16` 或 `12,16,24,32`
+  - 单尺度和多尺度都用这一个参数表达
+  - 建议只在 `hybrid` 或 `dense` 模式下使用
 
 - `--descriptor-selection`
   - `random` 和 `response`
@@ -148,10 +187,11 @@ python main.py \
 
 ## 推荐调参顺序
 
-1. 先固定 `--sift-sampling hybrid` 和 `--svm-kernel rbf`
-2. 再扫 `--num-clusters` 和 `--svm-c`
-3. 接着微调 `--max-descriptors-per-image`
-4. 最后再看 `--dense-step` 和 `--dense-size`
+1. 先固定 `--sift-sampling hybrid`
+2. 以 `--svm-kernel rbf` 为主，`chi2` 只当实验项
+3. 优先保留当前日志最优配置：`--num-clusters 1000 --dense-step 6 --svm-c 5.0`
+4. 再扫 `--max-descriptors-per-image`
+5. 最后再看 `--dense-sizes` 和 `--chi2-gamma`
 
 这样做的原因是：先改影响最大、最确定的项，再动细节项，比较容易判断到底是哪一个参数真正起作用。
 
@@ -160,18 +200,19 @@ python main.py \
 - `project_3/main.py`
   - `--sift-sampling`
   - `--dense-step`
-  - `--dense-size`
+  - `--dense-sizes`
   - `--svm-kernel`
+  - `--chi2-gamma`
   - `extract_sift_descriptors`
   - `build_dictionary`
   - `build_features`
 
 ## 说明
 
-默认值仍然保留成更保守的基线配置，没有直接把优化模式写死成默认值。这样做的原因是：
+默认值已经对齐到日志里表现最好的稳定配置；`chi2` 和多尺度 dense SIFT 仍然保留为显式实验项，不作为默认值。这样做的原因是：
 
-- 方便和课堂要求的原始流程对照
-- 方便先跑基线，再切换到优化版做比较
-- 避免把实验结果和正式提交混在一起
+- 方便你直接跑出最接近历史最优的结果
+- 方便再切换到 `chi2` / 多尺度做对照实验
+- 避免把高成本实验参数写死成默认值
 
 如果要提交作业，建议保留这份说明，并在 `result` 目录中输出正式跑分结果和混淆矩阵。
