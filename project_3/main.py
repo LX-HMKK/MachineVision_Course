@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-clusters",
         type=int,
-        default=5000,
+        default=1500,
         help="视觉词典大小，即 KMeans 聚类中心数；适当增大可提升表达能力，但会变慢并可能过拟合。",
     )
     parser.add_argument(
